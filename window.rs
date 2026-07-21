@@ -39,6 +39,9 @@ struct Ui {
     player: Player,
     tracks: Rc<RefCell<Vec<Track>>>,
     list: gtk::ListBox,
+    /// Scroller wrapping `list`; kept so deletes can preserve scroll position.
+    track_scroller: gtk::ScrolledWindow,
+    np_cover: gtk::Box,
     np_title: gtk::Label,
     np_artist: gtk::Label,
     play_btn: gtk::Button,
@@ -56,6 +59,11 @@ struct Ui {
     /// Playlist ids matching sidebar rows 1.. (row 0 is Liked Songs).
     playlist_ids: Rc<RefCell<Vec<i64>>>,
     is_playing: Rc<Cell<bool>>,
+    /// The tracks being played through — independent of the displayed list, so
+    /// browsing another playlist doesn't hijack next/prev.
+    queue: Rc<RefCell<Vec<Track>>>,
+    /// Id of the currently playing track, for highlighting it in any view.
+    playing_id: Rc<Cell<Option<i64>>>,
     /// Guards against the end-of-track handler firing twice (EOS + fallback).
     ended: Rc<Cell<bool>>,
     /// Interpolation anchor for smooth progress: a known position (seconds) and
@@ -87,6 +95,15 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
             .selection_mode(gtk::SelectionMode::None)
             .css_classes(vec!["tracks"])
             .build(),
+        track_scroller: gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vexpand(true)
+            .build(),
+        np_cover: {
+            let c = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+            c.append(&cover_widget(false, None));
+            c
+        },
         np_title: gtk::Label::builder().xalign(0.0).css_classes(vec!["track-title"]).build(),
         np_artist: gtk::Label::builder().xalign(0.0).css_classes(vec!["track-artist"]).build(),
         play_btn: gtk::Button::from_icon_name("media-playback-start-symbolic"),
@@ -122,6 +139,8 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
             .build(),
         playlist_ids: Rc::new(RefCell::new(Vec::new())),
         is_playing: Rc::new(Cell::new(false)),
+        queue: Rc::new(RefCell::new(Vec::new())),
+        playing_id: Rc::new(Cell::new(None)),
         ended: Rc::new(Cell::new(false)),
         anchor_pos: Rc::new(Cell::new(0.0)),
         anchor_time: Rc::new(Cell::new(None)),
@@ -133,6 +152,7 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
         repeat: Rc::new(Cell::new(Repeat::Off)),
     };
     ui.play_btn.add_css_class("play-mid");
+    ui.track_scroller.set_child(Some(&ui.list));
 
     // Double-click / Enter on a row starts that track.
     ui.list.connect_row_activated(glib::clone!(
@@ -332,7 +352,9 @@ impl Ui {
         }
 
         *self.tracks.borrow_mut() = tracks;
-        self.current.set(None);
+        // Re-highlight the playing track if it happens to be in this view; the
+        // queue and current index are left alone (playback keeps its own list).
+        self.update_highlight();
 
         if self.tracks.borrow().is_empty() {
             self.np_title.set_label("No music yet");
@@ -512,6 +534,29 @@ impl Ui {
             }
         }
 
+        // Delete the track from the library entirely.
+        menu.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        let delete = gtk::Button::builder()
+            .label("Delete from library")
+            .css_classes(vec!["flat"])
+            .build();
+        let ui = self.clone();
+        delete.connect_clicked(glib::clone!(
+            #[weak] popover,
+            move |_| {
+                // Preserve scroll position so deleting several tracks in a row
+                // doesn't fling the list back to the top each time.
+                let vadj = ui.track_scroller.vadjustment();
+                let scroll = vadj.value();
+                let _ = library::delete_track(&ui.conn, track_id);
+                ui.refresh_playlists();
+                ui.refresh_tracks();
+                glib::idle_add_local_once(move || vadj.set_value(scroll));
+                popover.popdown();
+            }
+        ));
+        menu.append(&delete);
+
         popover.set_child(Some(&menu));
         popover.set_parent(anchor);
         popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
@@ -519,23 +564,26 @@ impl Ui {
         popover.popup();
     }
 
-    /// Load and start the track at `index` in the current list, moving the
-    /// "now playing" row highlight along with it.
-    fn play_index(&self, index: usize) {
-        let Some(track) = self.tracks.borrow().get(index).cloned() else {
+    /// Start playing from the currently displayed list: the whole list becomes
+    /// the playback queue, so next/prev keep following it even if the user later
+    /// browses a different playlist.
+    fn play_index(&self, display_index: usize) {
+        let tracks = self.tracks.borrow().clone();
+        if display_index >= tracks.len() {
+            return;
+        }
+        *self.queue.borrow_mut() = tracks;
+        self.play_queue_index(display_index);
+    }
+
+    /// Load and start the track at `index` in the playback queue.
+    fn play_queue_index(&self, index: usize) {
+        let Some(track) = self.queue.borrow().get(index).cloned() else {
             return;
         };
-
-        // Move the highlight from the previously playing row to this one.
-        if let Some(old) = self.current.get() {
-            if let Some(row) = self.list.row_at_index(old as i32) {
-                row.remove_css_class("playing");
-            }
-        }
-        if let Some(row) = self.list.row_at_index(index as i32) {
-            row.add_css_class("playing");
-        }
         self.current.set(Some(index));
+        self.playing_id.set(Some(track.id));
+        self.update_highlight();
 
         let uri = gio::File::for_path(&track.path).uri();
         self.player.play_uri(&uri);
@@ -545,6 +593,39 @@ impl Ui {
         self.play_btn.set_icon_name("media-playback-pause-symbolic");
         self.np_title.set_label(&track.title);
         self.np_artist.set_label(&track.artist);
+        self.set_np_cover(&track.path);
+    }
+
+    /// Highlight the row of the playing track if it is in the current view.
+    fn update_highlight(&self) {
+        let playing = self.playing_id.get();
+        for (i, t) in self.tracks.borrow().iter().enumerate() {
+            if let Some(row) = self.list.row_at_index(i as i32) {
+                if Some(t.id) == playing {
+                    row.add_css_class("playing");
+                } else {
+                    row.remove_css_class("playing");
+                }
+            }
+        }
+    }
+
+    /// Show the given track's embedded cover in the now-playing bar (or a
+    /// music-note placeholder when it has none).
+    fn set_np_cover(&self, path: &str) {
+        while let Some(child) = self.np_cover.first_child() {
+            self.np_cover.remove(&child);
+        }
+        let tex = self
+            .cover_cache
+            .borrow_mut()
+            .entry(path.to_owned())
+            .or_insert_with(|| track_cover(path))
+            .clone();
+        match tex {
+            Some(tex) => self.np_cover.append(&texture_view(&tex, 40)),
+            None => self.np_cover.append(&cover_widget(false, None)),
+        }
     }
 
     /// Called when a track reaches its end. Honours repeat-one before advancing.
@@ -555,42 +636,42 @@ impl Ui {
         }
         if self.repeat.get() == Repeat::One {
             if let Some(i) = self.current.get() {
-                self.play_index(i);
+                self.play_queue_index(i);
             }
         } else {
             self.play_next();
         }
     }
 
-    /// Advance to the next track. Shuffle picks at random; repeat-all wraps to
-    /// the start; otherwise playback stops at the end of the list.
+    /// Advance within the playback queue. Shuffle picks at random; repeat-all
+    /// wraps to the start; otherwise playback stops at the end of the queue.
     fn play_next(&self) {
-        let len = self.tracks.borrow().len();
+        let len = self.queue.borrow().len();
         if len == 0 {
             return;
         }
         if self.shuffle.get() {
-            self.play_index(glib::random_int_range(0, len as i32) as usize);
+            self.play_queue_index(glib::random_int_range(0, len as i32) as usize);
             return;
         }
         let next = self.current.get().map_or(0, |i| i + 1);
         if next < len {
-            self.play_index(next);
+            self.play_queue_index(next);
         } else if self.repeat.get() == Repeat::All {
-            self.play_index(0);
+            self.play_queue_index(0);
         } else {
             self.is_playing.set(false);
             self.play_btn.set_icon_name("media-playback-start-symbolic");
         }
     }
 
-    /// Go back one track (or restart the list from the top).
+    /// Go back one track in the queue (or restart it from the top).
     fn play_prev(&self) {
         let prev = match self.current.get() {
             Some(i) if i > 0 => i - 1,
             _ => 0,
         };
-        self.play_index(prev);
+        self.play_queue_index(prev);
     }
 
     /// Move the progress bar and time labels to match the pipeline.
@@ -669,18 +750,10 @@ impl Ui {
             .cover_cache
             .borrow_mut()
             .entry(track.path.clone())
-            .or_insert_with(|| track_cover(&track.path, 40))
+            .or_insert_with(|| track_cover(&track.path))
             .clone();
         let cover: gtk::Widget = match tex {
-            Some(t) => {
-                let pic = gtk::Picture::for_paintable(&t);
-                pic.set_size_request(40, 40);
-                pic.set_halign(gtk::Align::Center);
-                pic.set_valign(gtk::Align::Center);
-                pic.set_overflow(gtk::Overflow::Hidden);
-                pic.add_css_class("cover-img");
-                pic.upcast()
-            }
+            Some(t) => texture_view(&t, 40),
             None => cover_widget(false, None),
         };
         row_box.append(&cover);
@@ -758,6 +831,10 @@ fn square_from_pixbuf(full: &gtk::gdk_pixbuf::Pixbuf, size: i32) -> Option<gdk::
     Some(gdk::Texture::for_pixbuf(&scaled))
 }
 
+/// Texture resolution for the small (40px) covers. Kept well above the display
+/// size so they stay sharp on HiDPI when shown through a sized `gtk::Image`.
+const COVER_TEX: i32 = 160;
+
 /// A square cover texture from an image file (used for playlist covers).
 fn square_texture(path: &str, size: i32) -> Option<gdk::Texture> {
     let full = gtk::gdk_pixbuf::Pixbuf::from_file(path).ok()?;
@@ -765,11 +842,44 @@ fn square_texture(path: &str, size: i32) -> Option<gdk::Texture> {
 }
 
 /// A square cover texture from a track's embedded album art, if present.
-fn track_cover(path: &str, size: i32) -> Option<gdk::Texture> {
+fn track_cover(path: &str) -> Option<gdk::Texture> {
     let bytes = scanner::read_cover(std::path::Path::new(path))?;
     let stream = gio::MemoryInputStream::from_bytes(&glib::Bytes::from(&bytes));
     let pixbuf = gtk::gdk_pixbuf::Pixbuf::from_stream(&stream, gio::Cancellable::NONE).ok()?;
-    square_from_pixbuf(&pixbuf, size)
+    square_from_pixbuf(&pixbuf, COVER_TEX)
+}
+
+/// Render a texture as a fixed `px`×`px` rounded cover. Uses `gtk::Image` with
+/// `pixel_size` so it never grows past `px` (a raw `Picture` inherits the
+/// texture's resolution) and stays crisp on HiDPI.
+fn texture_view(tex: &gdk::Texture, px: i32) -> gtk::Widget {
+    let img = gtk::Image::from_paintable(Some(tex));
+    img.set_pixel_size(px);
+    img.set_hexpand(true);
+    img.set_vexpand(true);
+
+    let holder = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    holder.set_size_request(px, px);
+    holder.set_hexpand(false);
+    holder.set_vexpand(false);
+    holder.set_halign(gtk::Align::Center);
+    holder.set_valign(gtk::Align::Center);
+    holder.set_overflow(gtk::Overflow::Hidden);
+    holder.add_css_class("cover-img");
+    holder.append(&img);
+    holder.upcast()
+}
+
+/// Write raw image bytes (e.g. an album's embedded art) into the covers dir and
+/// return the stored path.
+fn save_cover_bytes(playlist_id: i64, bytes: &[u8]) -> Option<std::path::PathBuf> {
+    let mut dir = glib::user_data_dir();
+    dir.push("raudio");
+    dir.push("covers");
+    std::fs::create_dir_all(&dir).ok()?;
+    let dest = dir.join(format!("{playlist_id}.cover"));
+    std::fs::write(&dest, bytes).ok()?;
+    Some(dest)
 }
 
 /// Copy a chosen image into `~/.local/share/raudio/covers/` and return the
@@ -795,26 +905,124 @@ fn open_library() -> Connection {
         .expect("failed to open the library database")
 }
 
-/// Hook the "Add music" nav button up to a folder chooser + scan.
+/// A file-chooser filter that only shows audio files.
+fn audio_filters() -> gio::ListStore {
+    let filter = gtk::FileFilter::new();
+    filter.set_name(Some("Audio"));
+    filter.add_mime_type("audio/*");
+    for ext in ["mp3", "flac", "ogg", "opus", "m4a", "aac", "wav", "wma", "aiff"] {
+        filter.add_suffix(ext);
+    }
+    let filters = gio::ListStore::new::<gtk::FileFilter>();
+    filters.append(&filter);
+    filters
+}
+
+/// Hook the "Add music" button up to a small menu: add files, add a folder, or
+/// import a folder as an album playlist.
 fn wire_add_music(ui: &Ui, window: &adw::ApplicationWindow) {
     ui.add_btn.connect_clicked(glib::clone!(
         #[strong] ui,
         #[weak] window,
+        #[weak(rename_to = anchor)] ui.add_btn,
         move |_| {
-            let dialog = gtk::FileDialog::builder()
-                .title("Choose a music folder")
-                .build();
-            dialog.select_folder(Some(&window), gio::Cancellable::NONE, glib::clone!(
-                #[strong] ui,
-                move |result| {
-                    if let Ok(folder) = result {
-                        if let Some(path) = folder.path() {
-                            scanner::scan_dir(&ui.conn, &path);
-                            ui.refresh_tracks();
+            let popover = gtk::Popover::new();
+            let menu = gtk::Box::new(gtk::Orientation::Vertical, 2);
+            menu.set_margin_top(4);
+            menu.set_margin_bottom(4);
+
+            let make = |label: &str| {
+                gtk::Button::builder().label(label).css_classes(vec!["flat"]).build()
+            };
+
+            // Add individual files.
+            let files = make("Add files…");
+            files.connect_clicked(glib::clone!(
+                #[strong] ui, #[weak] window, #[weak] popover,
+                move |_| {
+                    popover.popdown();
+                    let dialog = gtk::FileDialog::builder().title("Add music files").build();
+                    dialog.set_filters(Some(&audio_filters()));
+                    dialog.open_multiple(Some(&window), gio::Cancellable::NONE, glib::clone!(
+                        #[strong] ui,
+                        move |result| {
+                            if let Ok(list) = result {
+                                for i in 0..list.n_items() {
+                                    if let Some(file) = list.item(i).and_downcast::<gio::File>() {
+                                        if let Some(path) = file.path() {
+                                            scanner::scan_file(&ui.conn, &path);
+                                        }
+                                    }
+                                }
+                                ui.refresh_tracks();
+                            }
                         }
-                    }
+                    ));
                 }
             ));
+            menu.append(&files);
+
+            // Add a whole folder.
+            let folder = make("Add folder…");
+            folder.connect_clicked(glib::clone!(
+                #[strong] ui, #[weak] window, #[weak] popover,
+                move |_| {
+                    popover.popdown();
+                    let dialog = gtk::FileDialog::builder().title("Add music folder").build();
+                    dialog.select_folder(Some(&window), gio::Cancellable::NONE, glib::clone!(
+                        #[strong] ui,
+                        move |result| {
+                            if let Ok(folder) = result {
+                                if let Some(path) = folder.path() {
+                                    scanner::scan_dir(&ui.conn, &path);
+                                    ui.refresh_tracks();
+                                }
+                            }
+                        }
+                    ));
+                }
+            ));
+            menu.append(&folder);
+
+            // Import a folder as an album playlist.
+            let album = make("Import album as playlist…");
+            album.connect_clicked(glib::clone!(
+                #[strong] ui, #[weak] window, #[weak] popover,
+                move |_| {
+                    popover.popdown();
+                    let dialog = gtk::FileDialog::builder().title("Choose an album folder").build();
+                    dialog.select_folder(Some(&window), gio::Cancellable::NONE, glib::clone!(
+                        #[strong] ui,
+                        move |result| {
+                            if let Ok(folder) = result {
+                                if let Some(path) = folder.path() {
+                                    if let Some((name, ids, cover)) = scanner::import_album(&ui.conn, &path) {
+                                        if let Ok(pid) = library::create_playlist(&ui.conn, &name) {
+                                            for id in ids {
+                                                let _ = library::add_to_playlist(&ui.conn, pid, id);
+                                            }
+                                            // Use the album's embedded art as the cover.
+                                            if let Some(bytes) = cover {
+                                                if let Some(dest) = save_cover_bytes(pid, &bytes) {
+                                                    let _ = library::set_playlist_image(&ui.conn, pid, dest.to_str());
+                                                }
+                                            }
+                                        }
+                                        ui.refresh_playlists();
+                                        ui.refresh_tracks();
+                                    }
+                                }
+                            }
+                        }
+                    ));
+                }
+            ));
+            menu.append(&album);
+
+            popover.set_child(Some(&menu));
+            popover.set_parent(&anchor);
+            popover.connect_closed(|p| p.unparent());
+            popover.popup();
         }
     ));
 }
@@ -982,13 +1190,8 @@ fn nav_button(icon: &str, label: &str, active: bool) -> gtk::Button {
 /// A uniform 40×40 rounded cover: a custom image, the Liked badge, or a
 /// neutral placeholder — all the same size so the sidebar lines up.
 fn cover_widget(liked: bool, image: Option<&str>) -> gtk::Widget {
-    if let Some(tex) = image.and_then(|p| square_texture(p, 40)) {
-        let pic = gtk::Picture::for_paintable(&tex);
-        pic.set_size_request(40, 40);
-        pic.set_valign(gtk::Align::Center);
-        pic.set_overflow(gtk::Overflow::Hidden);
-        pic.add_css_class("cover-img");
-        return pic.upcast();
+    if let Some(tex) = image.and_then(|p| square_texture(p, COVER_TEX)) {
+        return texture_view(&tex, 40);
     }
 
     let icon = gtk::Image::from_icon_name(if liked {
@@ -1072,13 +1275,7 @@ fn build_content(ui: &Ui) -> gtk::Widget {
     ));
     controls.append(&play);
     content.append(&controls);
-
-    let scroller = gtk::ScrolledWindow::builder()
-        .hscrollbar_policy(gtk::PolicyType::Never)
-        .vexpand(true)
-        .child(&ui.list)
-        .build();
-    content.append(&scroller);
+    content.append(&ui.track_scroller);
 
     content.upcast()
 }
@@ -1093,10 +1290,7 @@ fn build_now_playing(ui: &Ui) -> gtk::Widget {
     // Left: current track.
     let np = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     np.set_margin_start(12);
-    let cover = gtk::Image::from_icon_name("audio-x-generic-symbolic");
-    cover.set_pixel_size(28);
-    cover.add_css_class("np-cover");
-    np.append(&cover);
+    np.append(&ui.np_cover);
     let np_text = gtk::Box::new(gtk::Orientation::Vertical, 1);
     np_text.set_valign(gtk::Align::Center);
     np_text.append(&ui.np_title);

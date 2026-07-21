@@ -45,6 +45,59 @@ pub fn scan_dir(conn: &Connection, dir: &Path) -> usize {
     count
 }
 
+/// Insert a single audio file and return its track id.
+pub fn scan_file(conn: &Connection, path: &Path) -> Option<i64> {
+    if !is_audio(path) {
+        return None;
+    }
+    let track = read_track(path)?;
+    library::insert_track(conn, &track).ok()?;
+    library::track_id_by_path(conn, &track.path)
+}
+
+/// Import a folder as an album: insert its audio files (in name order) and
+/// return the album's name plus the inserted track ids, ready to become a
+/// playlist. Name comes from the album tag, falling back to the folder name.
+pub fn import_album(conn: &Connection, dir: &Path) -> Option<(String, Vec<i64>, Option<Vec<u8>>)> {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && is_audio(p))
+        .collect();
+    files.sort();
+
+    let mut ids = Vec::new();
+    let mut album = String::new();
+    let mut cover: Option<Vec<u8>> = None;
+    for path in &files {
+        if let Some(track) = read_track(path) {
+            if album.is_empty() && !track.album.is_empty() {
+                album = track.album.clone();
+            }
+            if cover.is_none() {
+                cover = read_cover(path);
+            }
+            if library::insert_track(conn, &track).is_ok() {
+                if let Some(id) = library::track_id_by_path(conn, &track.path) {
+                    ids.push(id);
+                }
+            }
+        }
+    }
+    if ids.is_empty() {
+        return None;
+    }
+    let name = if album.is_empty() {
+        dir.file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Album".to_owned())
+    } else {
+        album
+    };
+    Some((name, ids, cover))
+}
+
 fn is_audio(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())

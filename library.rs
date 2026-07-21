@@ -106,6 +106,19 @@ pub fn insert_track(conn: &Connection, t: &NewTrack) -> Result<()> {
     Ok(())
 }
 
+/// Look up a track's id by its file path (used right after inserting).
+pub fn track_id_by_path(conn: &Connection, path: &str) -> Option<i64> {
+    conn.query_row("SELECT id FROM tracks WHERE path = ?1", [path], |r| r.get(0))
+        .ok()
+}
+
+/// Delete a track from the library entirely. Its playlist memberships and liked
+/// flag go with it (playlist rows cascade).
+pub fn delete_track(conn: &Connection, track_id: i64) -> Result<()> {
+    conn.execute("DELETE FROM tracks WHERE id = ?1", (track_id,))?;
+    Ok(())
+}
+
 /// Every track in the library, grouped by artist then album.
 pub fn all_tracks(conn: &Connection) -> Result<Vec<Track>> {
     let mut stmt = conn.prepare(
