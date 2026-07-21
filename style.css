@@ -1,0 +1,172 @@
+/* Structural stylesheet. All colours come from named colours defined per
+   theme in theme.rs, so switching themes only swaps the @define-color block. */
+
+window { background-color: @app_bg; }
+
+/* Floating cards: rounded, hairline-bordered panels over the window ground. */
+.rail, .content, .now-bar {
+    border-radius: 16px;
+    border: 1px solid @card_border;
+}
+
+/* ---- Header ---- */
+.theme-dot {
+    background-color: @accent_bg_color;
+    border-radius: 9px;
+    min-width: 18px;
+    min-height: 18px;
+}
+
+/* ---- Sidebar ---- */
+.rail {
+    background-color: @rail_bg;
+    padding: 16px 6px;
+}
+
+.brand {
+    font-family: "Source Serif 4", "Noto Serif", "DejaVu Serif", Georgia, serif;
+    font-size: 22px;
+    font-weight: 700;
+    padding: 4px 10px 6px 10px;
+}
+
+.section-label {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    opacity: 0.55;
+}
+
+button.nav {
+    padding: 9px 10px;
+    border-radius: 10px;
+    font-weight: 500;
+    opacity: 0.85;
+}
+button.nav:hover { background-color: alpha(@window_fg_color, 0.08); opacity: 1; }
+button.nav-active {
+    background-color: alpha(@accent_bg_color, 0.16);
+    color: @accent_color;
+    font-weight: 700;
+    opacity: 1;
+}
+button.add-playlist { min-width: 26px; min-height: 26px; opacity: 0.7; }
+button.add-playlist:hover { opacity: 1; color: @accent_color; }
+
+.playlists { background: transparent; }
+.playlists row {
+    border-radius: 10px;
+    padding: 6px 10px;
+    margin: 2px 0;
+}
+.playlists row:selected {
+    background-color: alpha(@window_fg_color, 0.08);
+    color: @window_fg_color;
+}
+.pl-title { font-weight: 600; }
+.pl-sub { font-size: 12px; opacity: 0.6; }
+
+/* Uniform 40x40 sidebar covers. */
+.cover-img { border-radius: 8px; }
+.cover-box {
+    color: alpha(@window_fg_color, 0.55);
+    background-color: alpha(@window_fg_color, 0.08);
+    border-radius: 8px;
+}
+.cover-liked {
+    color: @accent_fg_color;
+    background-image: linear-gradient(135deg, @accent_bg_color, shade(@accent_bg_color, 1.3));
+    border-radius: 8px;
+}
+
+/* ---- Main content ---- */
+.content { background-color: @content_bg; }
+
+.hero-art {
+    color: @accent_fg_color;
+    border-radius: 14px;
+    background-image: linear-gradient(150deg, @accent_bg_color, shade(@accent_bg_color, 1.25));
+}
+.hero-title {
+    font-family: "Source Serif 4", "Noto Serif", "DejaVu Serif", Georgia, serif;
+    font-size: 46px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+}
+.hero-sub { font-size: 13px; opacity: 0.65; }
+
+button.play-lg {
+    background-color: @accent_bg_color;
+    color: @accent_fg_color;
+    border-radius: 999px;
+    min-width: 52px;
+    min-height: 52px;
+}
+button.play-lg:hover { background-color: shade(@accent_bg_color, 1.08); }
+
+/* ---- Track list ---- */
+.tracks { background: transparent; }
+.tracks row { border-radius: 8px; }
+.tracks row:hover { background-color: alpha(@window_fg_color, 0.07); }
+.track-num { opacity: 0.5; font-feature-settings: "tnum"; }
+.track-title { font-weight: 600; }
+.track-artist { font-size: 12px; opacity: 0.6; }
+.track-album { opacity: 0.6; }
+.track-dur { opacity: 0.55; font-feature-settings: "tnum"; }
+
+/* The row whose track is currently loaded. */
+.tracks row.playing { background-color: alpha(@accent_bg_color, 0.16); }
+.tracks row.playing .track-title,
+.tracks row.playing .track-num { color: @accent_color; }
+
+/* Heart is a glyph (♡ / ♥) so it is filled regardless of the icon theme. */
+button.heart { min-width: 24px; min-height: 24px; opacity: 0; color: alpha(@window_fg_color, 0.5); }
+button.heart label { font-size: 15px; }
+.tracks row:hover button.heart { opacity: 0.85; }
+/* A liked track stays fully filled with the accent, hover or not. */
+.tracks row button.heart.liked,
+.tracks row:hover button.heart.liked {
+    opacity: 1;
+    color: @accent_bg_color;
+}
+
+/* ---- Now-playing bar ---- */
+.now-bar {
+    background-color: @rail_bg;
+    min-height: 84px;
+}
+.np-cover { opacity: 0.8; }
+button.transport { min-width: 32px; min-height: 32px; padding: 0; opacity: 0.75; }
+button.transport:hover { opacity: 1; }
+button.transport.active { color: @accent_bg_color; opacity: 1; }
+button.play-mid {
+    background-color: @window_fg_color;
+    color: @window_bg_color;
+    border-radius: 999px;
+    min-width: 40px;
+    min-height: 40px;
+    padding: 0;
+}
+.time { font-size: 11px; opacity: 0.6; font-feature-settings: "tnum"; }
+
+/* Keep the bar's sliders slim so the transport row has room and the play
+   button doesn't get squeezed past the panel edge. */
+.now-bar scale { min-height: 0; }
+.now-bar scale trough { min-height: 5px; }
+.now-bar scale slider {
+    min-width: 14px;
+    min-height: 14px;
+    margin: -7px;
+}
+
+trough highlight { background-color: @accent_bg_color; }
+slider { background-color: @accent_bg_color; }
+
+/* ---- Theme swatches (per-theme backgrounds appended from theme.rs) ---- */
+.swatch {
+    min-width: 32px;
+    min-height: 32px;
+    padding: 0;
+    border-radius: 8px;
+    border: 1px solid alpha(@window_fg_color, 0.2);
+}
