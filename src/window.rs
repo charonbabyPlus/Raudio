@@ -104,8 +104,18 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
             c.append(&cover_widget(false, None));
             c
         },
-        np_title: gtk::Label::builder().xalign(0.0).css_classes(vec!["track-title"]).build(),
-        np_artist: gtk::Label::builder().xalign(0.0).css_classes(vec!["track-artist"]).build(),
+        np_title: gtk::Label::builder()
+            .xalign(0.0)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .max_width_chars(22)
+            .css_classes(vec!["track-title"])
+            .build(),
+        np_artist: gtk::Label::builder()
+            .xalign(0.0)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .max_width_chars(22)
+            .css_classes(vec!["track-artist"])
+            .build(),
         play_btn: gtk::Button::from_icon_name("media-playback-start-symbolic"),
         add_btn: nav_button("list-add-symbolic", "Add music", false),
         new_playlist_btn: {
@@ -118,7 +128,18 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
         progress: gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 1.0, 0.001),
         time_pos: gtk::Label::builder().label("0:00").css_classes(vec!["time"]).build(),
         time_dur: gtk::Label::builder().label("0:00").css_classes(vec!["time"]).build(),
-        hero_title: gtk::Label::builder().label("All Songs").xalign(0.0).css_classes(vec!["hero-title"]).build(),
+        hero_title: gtk::Label::builder()
+            .label("All Songs")
+            .xalign(0.0)
+            // Wrap long album/playlist names onto several lines (up to 3, then …)
+            // instead of stretching the window.
+            .wrap(true)
+            .wrap_mode(gtk::pango::WrapMode::WordChar)
+            .lines(3)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .max_width_chars(24)
+            .css_classes(vec!["hero-title"])
+            .build(),
         hero_sub: gtk::Label::builder().xalign(0.0).css_classes(vec!["hero-sub"]).build(),
         hero_art: {
             let holder = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -273,6 +294,16 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
         #[strong] ui,
         move |_, _| {
             ui.tick_progress();
+            glib::ControlFlow::Continue
+        }
+    ));
+
+    // Advance at the end of a track on a plain timer, which keeps ticking even
+    // when the window is on another workspace (frame-clock ticks don't).
+    glib::timeout_add_local(std::time::Duration::from_millis(400), glib::clone!(
+        #[strong] ui,
+        move || {
+            ui.check_end();
             glib::ControlFlow::Continue
         }
     ));
@@ -628,6 +659,49 @@ impl Ui {
         }
     }
 
+    /// Extract audio from `link` with yt-dlp into the downloads dir, then scan
+    /// it into the library. Runs asynchronously so the UI stays responsive; the
+    /// now-playing labels double as a tiny status line.
+    fn download_audio(&self, link: &str) {
+        let out = downloads_dir().join("%(title)s.%(ext)s");
+        let args: Vec<std::ffi::OsString> = vec![
+            "yt-dlp".into(),
+            "-x".into(),
+            "--audio-format".into(),
+            "mp3".into(),
+            "--embed-thumbnail".into(),
+            "--embed-metadata".into(),
+            "--no-playlist".into(),
+            "-o".into(),
+            out.into_os_string(),
+            link.into(),
+        ];
+        let argv: Vec<&std::ffi::OsStr> = args.iter().map(|s| s.as_os_str()).collect();
+
+        match gtk::gio::Subprocess::newv(&argv, gtk::gio::SubprocessFlags::NONE) {
+            Ok(process) => {
+                self.np_title.set_label("Downloading…");
+                self.np_artist.set_label("");
+                let ui = self.clone();
+                process.wait_check_async(gtk::gio::Cancellable::NONE, move |result| {
+                    match result {
+                        Ok(_) => {
+                            scanner::scan_dir(&ui.conn, &downloads_dir());
+                            ui.refresh_tracks();
+                            ui.np_title.set_label("Download complete");
+                        }
+                        Err(_) => ui.np_title.set_label("Download failed"),
+                    }
+                    ui.np_artist.set_label("");
+                });
+            }
+            Err(_) => {
+                self.np_title.set_label("yt-dlp not found");
+                self.np_artist.set_label("Install yt-dlp to add from links");
+            }
+        }
+    }
+
     /// Called when a track reaches its end. Honours repeat-one before advancing.
     /// Guarded so EOS and the position fallback can't both fire it.
     fn on_track_end(&self) {
@@ -682,6 +756,25 @@ impl Ui {
             .set(running.then(std::time::Instant::now));
     }
 
+    /// End-of-track detection. Runs on a plain timer (not the frame clock) so it
+    /// keeps advancing even when the window is on another workspace or minimised,
+    /// where frame-clock ticks are paused. Some systems never deliver the
+    /// pipeline's EOS message, so we watch the position; the `ended` guard keeps
+    /// this from double-firing with EOS.
+    fn check_end(&self) {
+        if !self.is_playing.get() {
+            return;
+        }
+        let (Some(dur), Some(pos)) = (self.player.duration(), self.player.position()) else {
+            return;
+        };
+        let dur_s = dur.nseconds() as f64 / 1_000_000_000.0;
+        let pos_s = pos.nseconds() as f64 / 1_000_000_000.0;
+        if dur_s > 0.0 && pos_s >= dur_s - 0.2 {
+            self.on_track_end();
+        }
+    }
+
     fn tick_progress(&self) {
         let Some(dur) = self.player.duration() else {
             return;
@@ -692,18 +785,6 @@ impl Ui {
         }
 
         let real = self.player.position().map(|p| p.nseconds() as f64 / 1_000_000_000.0);
-
-        // Fallback end-of-track detection: some systems never deliver the
-        // pipeline's EOS message, so advance once the real position reaches the
-        // end. The `ended` guard keeps this from double-firing with EOS.
-        if self.is_playing.get() {
-            if let Some(r) = real {
-                if r >= dur_s - 0.2 {
-                    self.on_track_end();
-                    return;
-                }
-            }
-        }
 
         // Advance smoothly from the anchor using wall-clock time; the pipeline's
         // own position updates in coarse steps and would make the knob stutter.
@@ -761,11 +842,30 @@ impl Ui {
         let text = gtk::Box::new(gtk::Orientation::Vertical, 1);
         text.set_hexpand(true);
         text.set_valign(gtk::Align::Center);
-        text.append(&gtk::Label::builder().label(&track.title).xalign(0.0).css_classes(vec!["track-title"]).build());
-        text.append(&gtk::Label::builder().label(&track.artist).xalign(0.0).css_classes(vec!["track-artist"]).build());
+        text.append(
+            &gtk::Label::builder()
+                .label(&track.title)
+                .xalign(0.0)
+                .ellipsize(gtk::pango::EllipsizeMode::End)
+                .css_classes(vec!["track-title"])
+                .build(),
+        );
+        text.append(
+            &gtk::Label::builder()
+                .label(&track.artist)
+                .xalign(0.0)
+                .ellipsize(gtk::pango::EllipsizeMode::End)
+                .css_classes(vec!["track-artist"])
+                .build(),
+        );
         row_box.append(&text);
 
-        let album = gtk::Label::builder().label(&track.album).css_classes(vec!["track-album"]).build();
+        let album = gtk::Label::builder()
+            .label(&track.album)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .max_width_chars(24)
+            .css_classes(vec!["track-album"])
+            .build();
         row_box.append(&album);
 
         // Heart toggle as a glyph (♡ empty / ♥ filled) so a liked track is
@@ -1019,12 +1119,65 @@ fn wire_add_music(ui: &Ui, window: &adw::ApplicationWindow) {
             ));
             menu.append(&album);
 
+            // Download audio from a link (yt-dlp). The user is responsible for
+            // only fetching content they have the right to.
+            let url = make("Add from link…");
+            url.connect_clicked(glib::clone!(
+                #[strong] ui, #[weak] window, #[weak] popover,
+                move |_| {
+                    popover.popdown();
+                    prompt_url_download(&ui, &window);
+                }
+            ));
+            menu.append(&url);
+
             popover.set_child(Some(&menu));
             popover.set_parent(&anchor);
             popover.connect_closed(|p| p.unparent());
             popover.popup();
         }
     ));
+}
+
+/// Where downloaded audio lands (then gets scanned into the library).
+fn downloads_dir() -> std::path::PathBuf {
+    let mut dir = glib::user_data_dir();
+    dir.push("raudio");
+    dir.push("downloads");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
+/// Ask for a link, then extract its audio with yt-dlp into the library.
+fn prompt_url_download(ui: &Ui, window: &adw::ApplicationWindow) {
+    let dialog = adw::MessageDialog::new(
+        Some(window),
+        Some("Add from link"),
+        Some("Extracts audio with yt-dlp. Only download content you have the right to."),
+    );
+    dialog.add_response("cancel", "Cancel");
+    dialog.add_response("download", "Download");
+    dialog.set_response_appearance("download", adw::ResponseAppearance::Suggested);
+    dialog.set_default_response(Some("download"));
+    dialog.set_close_response("cancel");
+
+    let entry = gtk::Entry::builder().placeholder_text("Paste a link").build();
+    dialog.set_extra_child(Some(&entry));
+
+    dialog.connect_response(None, glib::clone!(
+        #[strong] ui,
+        #[weak] entry,
+        move |_, response| {
+            if response != "download" {
+                return;
+            }
+            let link = entry.text().trim().to_owned();
+            if !link.is_empty() {
+                ui.download_audio(&link);
+            }
+        }
+    ));
+    dialog.present();
 }
 
 /// Hook the "+" button up to a name prompt that creates a playlist.
@@ -1222,8 +1375,26 @@ fn playlist_row(name: &str, sub: &str, liked: bool, image: Option<&str>) -> gtk:
 
     let text = gtk::Box::new(gtk::Orientation::Vertical, 1);
     text.set_valign(gtk::Align::Center);
-    text.append(&gtk::Label::builder().label(name).xalign(0.0).css_classes(vec!["pl-title"]).build());
-    text.append(&gtk::Label::builder().label(sub).xalign(0.0).css_classes(vec!["pl-sub"]).build());
+    text.set_hexpand(true);
+    // Ellipsize long names so they never widen the sidebar / the window.
+    text.append(
+        &gtk::Label::builder()
+            .label(name)
+            .xalign(0.0)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .max_width_chars(16)
+            .css_classes(vec!["pl-title"])
+            .build(),
+    );
+    text.append(
+        &gtk::Label::builder()
+            .label(sub)
+            .xalign(0.0)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .max_width_chars(16)
+            .css_classes(vec!["pl-sub"])
+            .build(),
+    );
     row_box.append(&text);
 
     let row = gtk::ListBoxRow::new();
@@ -1258,6 +1429,8 @@ fn build_content(ui: &Ui) -> gtk::Widget {
 
     let info = gtk::Box::new(gtk::Orientation::Vertical, 8);
     info.set_valign(gtk::Align::End);
+    info.set_hexpand(true);
+    ui.hero_title.set_hexpand(true);
     info.append(&gtk::Label::builder().label("NOW VIEWING").xalign(0.0).css_classes(vec!["section-label"]).build());
     info.append(&ui.hero_title);
     info.append(&ui.hero_sub);

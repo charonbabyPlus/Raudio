@@ -42,7 +42,16 @@ pub const THEMES: &[Theme] = &[
 
 pub const COUNT: usize = THEMES.len();
 
-const STRUCTURAL: &str = include_str!("style.css");
+/// The structural stylesheet, loaded from the embedded GResource.
+fn structural() -> String {
+    gtk::gio::resources_lookup_data(
+        "/dev/raudio/style.css",
+        gtk::gio::ResourceLookupFlags::NONE,
+    )
+    .ok()
+    .and_then(|bytes| std::str::from_utf8(&bytes).map(str::to_owned).ok())
+    .unwrap_or_default()
+}
 
 thread_local! {
     static PROVIDER: RefCell<Option<gtk::CssProvider>> = const { RefCell::new(None) };
@@ -63,7 +72,7 @@ pub fn install(display: &gdk::Display) {
 /// Switch to theme `index`, rebuilding the palette + structural CSS.
 pub fn set(index: usize) {
     let t = &THEMES[index % THEMES.len()];
-    let css = format!("{}\n{}\n{}", palette_css(t), STRUCTURAL, swatch_css());
+    let css = format!("{}\n{}\n{}", palette_css(t), structural(), swatch_css());
     PROVIDER.with(|p| {
         if let Some(provider) = p.borrow().as_ref() {
             provider.load_from_string(&css);

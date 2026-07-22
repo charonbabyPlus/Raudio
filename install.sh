@@ -21,10 +21,10 @@ for size in 48 64 128 256 512; do
     dst="$PREFIX/icons/hicolor/${size}x${size}/apps/$APP_ID.png"
     mkdir -p "$(dirname "$dst")"
     if command -v ffmpeg >/dev/null 2>&1; then
-        ffmpeg -y -loglevel error -i "$HERE/icon.png" \
+        ffmpeg -y -loglevel error -i "$HERE/assets/icon.png" \
             -vf "scale=${size}:${size}:flags=lanczos" "$dst"
     else
-        install -m644 "$HERE/icon.png" "$dst"
+        install -m644 "$HERE/assets/icon.png" "$dst"
     fi
 done
 

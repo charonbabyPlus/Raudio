@@ -4,13 +4,12 @@ version = "0.1.0"
 edition = "2021"
 description = "Raudio — a GTK4 audio player with playlists and liked songs."
 
-[[bin]]
-name = "raudio"
-path = "main.rs"
-
 [dependencies]
 gtk = { version = "0.9", package = "gtk4", features = ["v4_12"] }
 adw = { version = "0.7", package = "libadwaita", features = ["v1_4"] }
 gstreamer = "0.23"
 rusqlite = { version = "0.32", features = ["bundled"] }
 lofty = "0.22"
+
+[build-dependencies]
+glib-build-tools = "0.20"

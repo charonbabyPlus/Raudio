@@ -16,6 +16,11 @@ fn main() -> glib::ExitCode {
     // GStreamer must be initialised before any pipeline element is created.
     gstreamer::init().expect("failed to initialise GStreamer");
 
+    // Register the embedded resources (stylesheet + bundled icon pack) so the
+    // app looks the same everywhere, regardless of the system icon theme.
+    gtk::gio::resources_register_include!("raudio.gresource")
+        .expect("failed to register embedded resources");
+
     // Human-readable name shown by the shell where an app name is needed.
     glib::set_application_name("Raudio");
 

@@ -5,7 +5,7 @@
 A small GTK4 / libadwaita music player written in Rust — playlists, single
 tracks, liked songs, embedded cover art, and switchable colour themes.
 
-![icon](icon.png)
+![icon](assets/icon.png)
 
 ## Features
 
@@ -30,6 +30,10 @@ sudo pacman -S --needed rust base-devel pkgconf \
 ```
 
 (`gst-plugins-good` / `-bad` provide MP3/AAC/FLAC/etc. decoders.)
+
+**Optional:** `yt-dlp` (+ `ffmpeg`) enables *Add music → Add from link…*, which
+extracts a link's audio into your library. Only download content you have the
+right to. On Arch: `sudo pacman -S --needed yt-dlp ffmpeg`.
 
 **Debian / Ubuntu:**
 
@@ -65,3 +69,23 @@ shows up in your application menu:
 
 Then launch **Raudio** from your app menu, or run `~/.local/bin/raudio`
 (ensure `~/.local/bin` is on your `PATH`).
+
+## Uninstall
+
+```sh
+./uninstall.sh           # removes the app, keeps your library
+./uninstall.sh --purge   # also deletes your library and covers
+```
+
+## Project layout
+
+```
+src/         Rust sources (main, window, player, library, scanner, theme)
+resources/   style.css + bundled symbolic icon pack, embedded via GResource
+assets/      application icon
+build.rs     compiles resources/ into the binary
+```
+
+The in-app symbolic icons are bundled from the **Adwaita** icon theme
+(GNOME Project, CC BY-SA / GPL) so the UI looks the same regardless of the
+system icon theme.
