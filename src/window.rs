@@ -2,7 +2,6 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use adw::prelude::MessageDialogExt;
 use gtk::gdk;
 use gtk::gio;
 use gtk::glib;
@@ -86,7 +85,7 @@ struct Ui {
 
 /// Assemble the full window: sidebar | main content, with a now-playing bar
 /// pinned across the bottom.
-pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
+pub fn build(app: &gtk::Application) -> gtk::ApplicationWindow {
     let ui = Ui {
         conn: Rc::new(open_library()),
         player: Player::new(),
@@ -201,9 +200,9 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
         }
     ));
 
-    // A flat, full-width header bar gives the window a draggable top strip and
-    // the standard KDE window controls, without breaking the card look below.
-    let header = adw::HeaderBar::builder().css_classes(vec!["flat"]).build();
+    // A flat header bar gives the window its draggable titlebar + window
+    // controls. Used as the real titlebar (works on both Linux and Windows).
+    let header = gtk::HeaderBar::builder().css_classes(vec!["flat"]).build();
 
     // Search box lives in the title area and filters the visible rows live.
     let search = gtk::SearchEntry::builder().placeholder_text("Search").width_request(280).build();
@@ -259,17 +258,14 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
     root.append(&top);
     root.append(&build_now_playing(&ui));
 
-    let outer = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    outer.append(&header);
-    outer.append(&root);
-
-    let window = adw::ApplicationWindow::builder()
+    let window = gtk::ApplicationWindow::builder()
         .application(app)
         .title("Raudio")
         .default_width(1180)
         .default_height(760)
-        .content(&outer)
         .build();
+    window.set_titlebar(Some(&header));
+    window.set_child(Some(&root));
     // Ties the window to the installed icon (named after the app id).
     gtk::Window::set_default_icon_name("com.raudio.Raudio");
 
@@ -1020,7 +1016,7 @@ fn audio_filters() -> gio::ListStore {
 
 /// Hook the "Add music" button up to a small menu: add files, add a folder, or
 /// import a folder as an album playlist.
-fn wire_add_music(ui: &Ui, window: &adw::ApplicationWindow) {
+fn wire_add_music(ui: &Ui, window: &gtk::ApplicationWindow) {
     ui.add_btn.connect_clicked(glib::clone!(
         #[strong] ui,
         #[weak] window,
@@ -1148,69 +1144,99 @@ fn downloads_dir() -> std::path::PathBuf {
     dir
 }
 
-/// Ask for a link, then extract its audio with yt-dlp into the library.
-fn prompt_url_download(ui: &Ui, window: &adw::ApplicationWindow) {
-    let dialog = adw::MessageDialog::new(
-        Some(window),
-        Some("Add from link"),
-        Some("Extracts audio with yt-dlp. Only download content you have the right to."),
-    );
-    dialog.add_response("cancel", "Cancel");
-    dialog.add_response("download", "Download");
-    dialog.set_response_appearance("download", adw::ResponseAppearance::Suggested);
-    dialog.set_default_response(Some("download"));
-    dialog.set_close_response("cancel");
+/// A small modal prompt: a title, optional subtitle, one text entry, and
+/// Cancel / confirm buttons. Pure GTK4 (no libadwaita) so it works everywhere.
+/// `on_ok` receives the trimmed, non-empty text.
+fn text_prompt<F: Fn(&str) + 'static>(
+    parent: &gtk::ApplicationWindow,
+    title: &str,
+    subtitle: Option<&str>,
+    placeholder: &str,
+    ok_label: &str,
+    on_ok: F,
+) {
+    let dialog = gtk::Window::builder()
+        .title(title)
+        .transient_for(parent)
+        .modal(true)
+        .resizable(false)
+        .default_width(360)
+        .build();
 
-    let entry = gtk::Entry::builder().placeholder_text("Paste a link").build();
-    dialog.set_extra_child(Some(&entry));
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 14);
+    content.set_margin_top(18);
+    content.set_margin_bottom(18);
+    content.set_margin_start(18);
+    content.set_margin_end(18);
 
-    dialog.connect_response(None, glib::clone!(
-        #[strong] ui,
+    if let Some(sub) = subtitle {
+        content.append(
+            &gtk::Label::builder()
+                .label(sub)
+                .xalign(0.0)
+                .wrap(true)
+                .max_width_chars(40)
+                .css_classes(vec!["hero-sub"])
+                .build(),
+        );
+    }
+
+    let entry = gtk::Entry::builder().placeholder_text(placeholder).build();
+    content.append(&entry);
+
+    let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    buttons.set_halign(gtk::Align::End);
+    let cancel = gtk::Button::with_label("Cancel");
+    let confirm = gtk::Button::with_label(ok_label);
+    confirm.add_css_class("suggested-action");
+    buttons.append(&cancel);
+    buttons.append(&confirm);
+    content.append(&buttons);
+
+    dialog.set_child(Some(&content));
+
+    confirm.connect_clicked(glib::clone!(
+        #[weak] dialog,
         #[weak] entry,
-        move |_, response| {
-            if response != "download" {
-                return;
+        move |_| {
+            let text = entry.text().trim().to_owned();
+            if !text.is_empty() {
+                on_ok(&text);
             }
-            let link = entry.text().trim().to_owned();
-            if !link.is_empty() {
-                ui.download_audio(&link);
-            }
+            dialog.close();
         }
     ));
+    // Enter in the field triggers the confirm button.
+    entry.connect_activate(glib::clone!(#[weak] confirm, move |_| confirm.emit_clicked()));
+    cancel.connect_clicked(glib::clone!(#[weak] dialog, move |_| dialog.close()));
+
     dialog.present();
 }
 
+/// Ask for a link, then extract its audio with yt-dlp into the library.
+fn prompt_url_download(ui: &Ui, window: &gtk::ApplicationWindow) {
+    let ui = ui.clone();
+    text_prompt(
+        window,
+        "Add from link",
+        Some("Extracts audio with yt-dlp. Only download content you have the right to."),
+        "Paste a link",
+        "Download",
+        move |link| ui.download_audio(link),
+    );
+}
+
 /// Hook the "+" button up to a name prompt that creates a playlist.
-fn wire_new_playlist(ui: &Ui, window: &adw::ApplicationWindow) {
+fn wire_new_playlist(ui: &Ui, window: &gtk::ApplicationWindow) {
     ui.new_playlist_btn.connect_clicked(glib::clone!(
         #[strong] ui,
         #[weak] window,
         move |_| {
-            let dialog = adw::MessageDialog::new(Some(&window), Some("New playlist"), None);
-            dialog.add_response("cancel", "Cancel");
-            dialog.add_response("create", "Create");
-            dialog.set_response_appearance("create", adw::ResponseAppearance::Suggested);
-            dialog.set_default_response(Some("create"));
-            dialog.set_close_response("cancel");
-
-            let entry = gtk::Entry::builder().placeholder_text("Playlist name").build();
-            dialog.set_extra_child(Some(&entry));
-
-            dialog.connect_response(None, glib::clone!(
-                #[strong] ui,
-                #[weak] entry,
-                move |_, response| {
-                    if response == "create" {
-                        let name = entry.text();
-                        let name = name.trim();
-                        if !name.is_empty() {
-                            let _ = library::create_playlist(&ui.conn, name);
-                            ui.refresh_playlists();
-                        }
-                    }
-                }
-            ));
-            dialog.present();
+            let ui = ui.clone();
+            text_prompt(&window, "New playlist", None, "Playlist name", "Create", move |name| {
+                let _ = library::create_playlist(&ui.conn, name);
+                ui.refresh_playlists();
+            });
         }
     ));
 }

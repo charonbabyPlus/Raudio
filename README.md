@@ -2,8 +2,9 @@
 
 # Raudio
 
-A small GTK4 / libadwaita music player written in Rust — playlists, single
-tracks, liked songs, embedded cover art, and switchable colour themes.
+A small GTK4 music player written in Rust — playlists, single tracks, liked
+songs, embedded cover art, and switchable colour themes. Runs on Linux and
+Windows.
 
 ![icon](assets/icon.png)
 
@@ -19,7 +20,8 @@ tracks, liked songs, embedded cover art, and switchable colour themes.
 ## Dependencies
 
 You need Rust (stable) and the GTK4 / libadwaita / GStreamer development
-libraries, plus a C toolchain (for the bundled SQLite).
+libraries, plus a C toolchain (for the bundled SQLite). On Linux libadwaita
+gives the refined look; on Windows the app builds without it (pure GTK4).
 
 **Arch Linux:**
 
@@ -76,6 +78,48 @@ Then launch **Raudio** from your app menu, or run `~/.local/bin/raudio`
 ./uninstall.sh           # removes the app, keeps your library
 ./uninstall.sh --purge   # also deletes your library and covers
 ```
+
+## Windows
+
+On Windows the app builds **without libadwaita** (`--no-default-features`),
+staying pure GTK4. Build via **MSYS2**.
+
+1. Install [MSYS2](https://www.msys2.org/), open the **MinGW64** shell, and get
+   the toolchain + libraries (no libadwaita needed):
+
+   ```sh
+   pacman -S --needed mingw-w64-x86_64-rust mingw-w64-x86_64-gtk4 \
+       mingw-w64-x86_64-gstreamer mingw-w64-x86_64-gst-plugins-base \
+       mingw-w64-x86_64-gst-plugins-good mingw-w64-x86_64-gst-plugins-bad \
+       mingw-w64-x86_64-pkgconf
+   ```
+
+2. Build and run (pure GTK4):
+
+   ```sh
+   cargo run --release --no-default-features
+   ```
+
+3. Make a redistributable folder (bundles the exe + all DLLs, GStreamer
+   plugins, image loaders and schemas — icons/CSS are already embedded):
+
+   ```sh
+   ./windows/bundle.sh      # writes dist/raudio/
+   ```
+
+   Zip `dist/raudio/` to share. `yt-dlp.exe` (for *Add from link*) is optional
+   and can be dropped next to `raudio.exe`.
+
+4. *(Optional)* Build a proper installer with
+   [Inno Setup](https://jrsoftware.org/isinfo.php) — it wraps `dist/raudio/`
+   into `dist/raudio-setup.exe` with Start-menu / desktop shortcuts:
+
+   ```
+   "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" windows\raudio.iss
+   ```
+
+The app icon is embedded into `raudio.exe` (via `winresource` at build time),
+so Explorer, the taskbar and shortcuts show it.
 
 ## Project layout
 

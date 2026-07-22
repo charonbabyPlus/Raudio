@@ -24,7 +24,7 @@ fn main() -> glib::ExitCode {
     // Human-readable name shown by the shell where an app name is needed.
     glib::set_application_name("Raudio");
 
-    let app = adw::Application::builder()
+    let app = gtk::Application::builder()
         .application_id(APP_ID)
         .build();
 

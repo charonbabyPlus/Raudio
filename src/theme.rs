@@ -78,11 +78,18 @@ pub fn set(index: usize) {
             provider.load_from_string(&css);
         }
     });
+    // Switch the base light/dark so built-in widget chrome (scrollbars, entries,
+    // menus) matches; our CSS overrides the actual palette on top.
+    #[cfg(feature = "adwaita")]
     adw::StyleManager::default().set_color_scheme(if t.dark {
         adw::ColorScheme::ForceDark
     } else {
         adw::ColorScheme::ForceLight
     });
+    #[cfg(not(feature = "adwaita"))]
+    if let Some(settings) = gtk::Settings::default() {
+        settings.set_gtk_application_prefer_dark_theme(t.dark);
+    }
 }
 
 /// The named-colour block the structural stylesheet is written against.

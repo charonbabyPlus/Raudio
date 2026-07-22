@@ -136,7 +136,12 @@ button.heart label { font-size: 15px; }
     min-height: 84px;
 }
 .np-cover { opacity: 0.8; }
-button.transport { min-width: 32px; min-height: 32px; padding: 0; opacity: 0.75; }
+button.transport {
+    min-width: 34px;
+    min-height: 34px;
+    border-radius: 999px;
+    opacity: 0.7;
+}
 button.transport:hover { opacity: 1; }
 button.transport.active { color: @accent_bg_color; opacity: 1; }
 button.play-mid {
@@ -149,18 +154,10 @@ button.play-mid {
 }
 .time { font-size: 11px; opacity: 0.6; font-feature-settings: "tnum"; }
 
-/* Keep the bar's sliders slim so the transport row has room and the play
-   button doesn't get squeezed past the panel edge. */
-.now-bar scale { min-height: 0; }
-.now-bar scale trough { min-height: 5px; }
-.now-bar scale slider {
-    min-width: 14px;
-    min-height: 14px;
-    margin: -7px;
-}
-
-trough highlight { background-color: @accent_bg_color; }
-slider { background-color: @accent_bg_color; }
+/* Just tint the scales with the accent; let the Adwaita theme keep the round
+   handle and correct sizing (overriding size/margin made it look blotchy). */
+highlight { background-color: @accent_bg_color; }
+scale slider { background-color: @accent_bg_color; }
 
 /* ---- Theme swatches (per-theme backgrounds appended from theme.rs) ---- */
 .swatch {

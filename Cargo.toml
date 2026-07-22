@@ -4,12 +4,22 @@ version = "0.1.0"
 edition = "2021"
 description = "Raudio — a GTK4 audio player with playlists and liked songs."
 
+[features]
+# On by default (Linux): pull in libadwaita for its refined widget styling.
+# Build with --no-default-features on Windows to stay pure GTK4.
+default = ["adwaita"]
+adwaita = ["dep:adw"]
+
 [dependencies]
 gtk = { version = "0.9", package = "gtk4", features = ["v4_12"] }
-adw = { version = "0.7", package = "libadwaita", features = ["v1_4"] }
+adw = { version = "0.7", package = "libadwaita", features = ["v1_4"], optional = true }
 gstreamer = "0.23"
 rusqlite = { version = "0.32", features = ["bundled"] }
 lofty = "0.22"
 
 [build-dependencies]
 glib-build-tools = "0.20"
+
+# Only pulled in when building for Windows; embeds the app icon into the exe.
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"

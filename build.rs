@@ -6,4 +6,13 @@ fn main() {
         "resources/raudio.gresource.xml",
         "raudio.gresource",
     );
+
+    // On Windows, embed the app icon into the .exe so it shows in Explorer,
+    // the taskbar and shortcuts. No-op elsewhere.
+    #[cfg(windows)]
+    {
+        let mut res = winresource::WindowsResource::new();
+        res.set_icon("assets/icon.ico");
+        let _ = res.compile();
+    }
 }
